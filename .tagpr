@@ -1,0 +1,6 @@
+[tagpr]
+	vPrefix = true
+	releaseBranch = main
+	versionFile = deploy/dev/image-tag.jsonnet,deploy/pro/image-tag.jsonnet
+	release = true
+	changelog = true

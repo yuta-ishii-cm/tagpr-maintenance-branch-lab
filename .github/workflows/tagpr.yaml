@@ -1,0 +1,107 @@
+name: TAGPR
+
+# tagpr は機能リリース（main）専用。リリースPRのブランチ名が tagpr-from-<最新タグ> で固定のため、
+# 保守ブランチでも動かすと main と同じブランチを奪い合う。修正リリースは hotfix-release.yaml で行う。
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: tagpr
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  tagpr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.tagpr.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      # tagpr は全ブランチの最新タグを現在バージョンとみなし、versionFile の値を優先する。
+      # 修正リリースのタグが main に未反映のまま動かすとバージョンがずれるため、同期PRのマージまで止める。
+      - name: Guard
+        id: guard
+        env:
+          GUARD_DISABLED: ${{ vars.GUARD_DISABLED }}
+        run: |
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          if [ -z "$latest" ]; then
+            echo "::notice::タグが無いためスキップ"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$GUARD_DISABLED" = "true" ]; then
+            echo "::warning::GUARD_DISABLED=true のためガードを無効化"
+          elif ! git merge-base --is-ancestor "$latest" HEAD; then
+            echo "::warning::最新タグ ${latest} が main に未反映（同期PR待ち）のためスキップ"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - uses: Songmu/tagpr@242e22916eb775d6e359959fe3ba5c497de4a01a # v1.20.2
+        id: tagpr
+        if: steps.guard.outputs.run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 機能リリースは minor を上げ、保守ブランチの修正リリース（patch）と番号帯を分ける
+      - name: Mark release PR as minor
+        id: minor
+        if: steps.tagpr.outputs.pull_request != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_JSON: ${{ steps.tagpr.outputs.pull_request }}
+        run: |
+          if jq -e '.labels[]? | select(.name == "tagpr:minor")' <<< "$PR_JSON" > /dev/null; then
+            echo "relabeled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh label create 'tagpr:minor' --color '0e8a16' --force
+          gh pr edit "$(jq -r '.number' <<< "$PR_JSON")" --add-label 'tagpr:minor'
+          echo "relabeled=true" >> "$GITHUB_OUTPUT"
+
+      # ラベルは次回の実行から反映されるため、付けた直後にもう一度 tagpr を動かしてリリースPRを minor にする
+      - name: Restore release branch
+        if: steps.minor.outputs.relabeled == 'true'
+        run: git checkout -f main
+
+      - uses: Songmu/tagpr@242e22916eb775d6e359959fe3ba5c497de4a01a # v1.20.2
+        if: steps.minor.outputs.relabeled == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 機能リリース（vX.Y.0）: 保守ブランチ release/vX.Y を作り、旧保守ブランチ向けの修正候補PRを付け替える
+  open-maintenance-branch:
+    needs: tagpr
+    if: needs.tagpr.outputs.tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.tagpr.outputs.tag }}
+    steps:
+      - name: Create maintenance branch and retarget pull requests
+        run: |
+          branch="release/${TAG%.*}"
+          sha=$(gh api "repos/${GH_REPO}/commits/${TAG}" --jq .sha)
+          gh api "repos/${GH_REPO}/git/refs" -f ref="refs/heads/${branch}" -f sha="${sha}"
+
+          gh pr list --state open --json number,baseRefName \
+            --jq ".[] | select(.baseRefName | startswith(\"release/\")) | select(.baseRefName != \"${branch}\") | .number" |
+            while read -r number; do
+              gh pr edit "$number" --base "$branch"
+              gh api -X PUT "repos/${GH_REPO}/pulls/${number}/update-branch" ||
+                gh pr comment "$number" --body "${branch} を取り込めませんでした（コンフリクト）。手で解消してください。"
+            done

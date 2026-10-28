@@ -1,0 +1,120 @@
+name: HOTFIX_RELEASE
+run-name: HOTFIX_RELEASE (${{ inputs.branch }})
+
+# 保守ブランチ release/vX.Y にマージ済みの修正をリリースする。
+# 次のバージョンはその保守ブランチの最新タグ（vX.Y.*）の patch を上げて決める。
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Maintenance branch (e.g. release/v1.1)'
+        required: true
+        type: string
+
+concurrency:
+  group: hotfix-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      BRANCH: ${{ inputs.branch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0
+
+      - name: Decide version
+        id: version
+        run: |
+          if ! [[ "$BRANCH" =~ ^release/(v[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::保守ブランチ（release/vX.Y）を指定してください: ${BRANCH}"
+            exit 1
+          fi
+          line="${BASH_REMATCH[1]}"
+          current=$(git tag --list "${line}.*" --sort=-v:refname | head -n 1)
+          if [ -z "$current" ]; then
+            echo "::error::${line}.* のタグがありません"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$current" HEAD; then
+            echo "::error::${current} が ${BRANCH} に含まれていません"
+            exit 1
+          fi
+          if [ "$(git rev-parse "${current}^{commit}")" = "$(git rev-parse HEAD)" ]; then
+            echo "::error::${current} 以降にリリースする変更がありません"
+            exit 1
+          fi
+          next="${line}.$(( ${current##*.} + 1 ))"
+          echo "current=${current}" >> "$GITHUB_OUTPUT"
+          echo "next=${next}" >> "$GITHUB_OUTPUT"
+          echo "${current} -> ${next}"
+
+      - name: Update versionFile and CHANGELOG
+        env:
+          CURRENT: ${{ steps.version.outputs.current }}
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          IFS=',' read -ra files <<< "$(git config -f .tagpr tagpr.versionFile)"
+          for f in "${files[@]}"; do
+            sed -i "s/${CURRENT}/${NEXT}/g" "$f"
+          done
+
+          notes=$(gh api "repos/${GH_REPO}/releases/generate-notes" \
+            -f tag_name="$NEXT" -f target_commitish="$BRANCH" -f previous_tag_name="$CURRENT" \
+            --jq '.body' | grep '^\* ' | sed 's/^\* /- /' || true)
+          header="## [${NEXT}](https://github.com/${GH_REPO}/compare/${CURRENT}...${NEXT}) - $(TZ=Asia/Tokyo date +%Y-%m-%d)"
+          { head -n 1 CHANGELOG.md; printf '\n%s\n%s\n' "$header" "$notes"; tail -n +2 CHANGELOG.md; } > CHANGELOG.tmp
+          mv CHANGELOG.tmp CHANGELOG.md
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add CHANGELOG.md "${files[@]}"
+          git commit -m "[hotfix-release] prepare for ${NEXT}"
+          git tag "$NEXT"
+          git push origin "HEAD:${BRANCH}" "$NEXT"
+
+      - name: Create GitHub Release
+        env:
+          CURRENT: ${{ steps.version.outputs.current }}
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          gh release create "$NEXT" --verify-tag --title "$NEXT" \
+            --generate-notes --notes-start-tag "$CURRENT"
+
+      - name: Open sync pull request to main
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          sync="sync/${NEXT}"
+          git push origin "HEAD:refs/heads/${sync}"
+
+          # 新しい同期PRに古い同期PRの内容も含まれるため、古いほうは閉じる
+          gh pr list --state open --base main --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("sync/")) | .number' |
+            while read -r number; do
+              gh pr close "$number" --delete-branch --comment "${sync} の同期PRに置き換えるため、クローズします。"
+            done
+
+          gh pr create --base main --head "$sync" \
+            --title "sync: ${NEXT} を main に反映する" \
+            --body "保守ブランチ ${BRANCH} でリリースした ${NEXT} を main に取り込みます。"
+
+      - name: Update fix candidates
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          gh pr list --state open --base "$BRANCH" --json number --jq '.[].number' |
+            while read -r number; do
+              gh api -X PUT "repos/${GH_REPO}/pulls/${number}/update-branch" ||
+                gh pr comment "$number" --body "${NEXT} を取り込めませんでした（コンフリクト）。手で解消してください。"
+            done

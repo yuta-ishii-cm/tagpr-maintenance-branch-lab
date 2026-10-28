@@ -1,0 +1,11 @@
+name: CI
+
+# GITHUB_TOKEN による push（tagpr・自動同期）で起動するかを観察するためのダミー
+on: [push]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "ref=${GITHUB_REF} actor=${GITHUB_ACTOR} sha=${GITHUB_SHA}"
