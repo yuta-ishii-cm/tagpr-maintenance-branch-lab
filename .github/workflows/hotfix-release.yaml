@@ -55,6 +55,7 @@ jobs:
             exit 1
           fi
           next="${line}.$(( ${current##*.} + 1 ))"
+          echo "line=${line}" >> "$GITHUB_OUTPUT"
           echo "current=${current}" >> "$GITHUB_OUTPUT"
           echo "next=${next}" >> "$GITHUB_OUTPUT"
           echo "${current} -> ${next}"
@@ -91,23 +92,31 @@ jobs:
           gh release create "$NEXT" --verify-tag --title "$NEXT" \
             --generate-notes --notes-start-tag "$CURRENT"
 
-      - name: Open sync pull request to main
+      # 機能リリースのタグ作成から pro へのデプロイまでの間に旧保守ブランチで修正を出すと、
+      # 新しい保守ブランチにも反映が要るため、main だけでなく自分より新しい保守ブランチにも同期PRを作る
+      - name: Open sync pull requests
         env:
+          LINE: ${{ steps.version.outputs.line }}
           NEXT: ${{ steps.version.outputs.next }}
         run: |
-          sync="sync/${NEXT}"
-          git push origin "HEAD:refs/heads/${sync}"
+          newer=$(git for-each-ref --format='%(refname:lstrip=3)' 'refs/remotes/origin/release/v*' |
+            sort -V | awk -v cur="$BRANCH" 'found { print } $0 == cur { found = 1 }')
 
-          # 新しい同期PRに古い同期PRの内容も含まれるため、古いほうは閉じる
-          gh pr list --state open --base main --json number,headRefName \
-            --jq '.[] | select(.headRefName | startswith("sync/")) | .number' |
-            while read -r number; do
-              gh pr close "$number" --delete-branch --comment "${sync} の同期PRに置き換えるため、クローズします。"
-            done
+          for base in $newer main; do
+            sync="sync/${NEXT}-to-${base//\//-}"
+            git push origin "HEAD:refs/heads/${sync}"
 
-          gh pr create --base main --head "$sync" \
-            --title "sync: ${NEXT} を main に反映する" \
-            --body "保守ブランチ ${BRANCH} でリリースした ${NEXT} を main に取り込みます。"
+            # 同じ保守ブランチからの古い同期PRは、新しい同期PRに内容が含まれるため閉じる
+            gh pr list --state open --base "$base" --json number,headRefName \
+              --jq ".[] | select(.headRefName | startswith(\"sync/${LINE}.\")) | .number" |
+              while read -r number; do
+                gh pr close "$number" --delete-branch --comment "${sync} の同期PRに置き換えるため、クローズします。"
+              done
+
+            gh pr create --base "$base" --head "$sync" \
+              --title "sync: ${NEXT} を ${base} に反映する" \
+              --body "保守ブランチ ${BRANCH} でリリースした ${NEXT} を ${base} に取り込みます。"
+          done
 
       - name: Update fix candidates
         env:
