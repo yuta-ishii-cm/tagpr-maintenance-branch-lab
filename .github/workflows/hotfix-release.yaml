@@ -111,8 +111,9 @@ jobs:
             sync="sync/${NEXT}-to-${base//\//-}"
             note=""
 
-            # 同期先も versionFile・CHANGELOG を更新している（機能リリース済み）とその2つが必ずぶつかるため、
-            # それだけなら同期ブランチ側で解消する。versionFile は同期先の値、CHANGELOG は今回の節を先頭に差し込む
+            # 同期先が機能リリース済みだったり、過去に複数の保守ブランチへ同期したりしていると、
+            # versionFile・CHANGELOG がぶつかる。それだけなら同期ブランチ側で解消する。
+            # versionFile は同期先と今回のうち新しいバージョン、CHANGELOG は同期先の内容の先頭に今回の節を差し込む
             git switch -q --detach "origin/${base}"
             if git merge -q --no-ff --no-edit "$NEXT"; then
               git switch -q --detach "$NEXT"
@@ -120,13 +121,19 @@ jobs:
               conflicted=$(git diff --name-only --diff-filter=U)
               others=$(grep -vxF -e CHANGELOG.md "${version_files[@]/#/-e}" <<< "$conflicted" || true)
               if [ -z "$others" ]; then
-                git checkout --ours -- "${version_files[@]}"
+                base_version=$(git show "origin/${base}:${version_files[0]}" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+                kept=$(printf '%s\n%s\n' "$base_version" "$NEXT" | sort -V | tail -n 1)
+                if [ "$kept" = "$NEXT" ]; then
+                  git checkout --theirs -- "${version_files[@]}"
+                else
+                  git checkout --ours -- "${version_files[@]}"
+                fi
                 git show "origin/${base}:CHANGELOG.md" > CHANGELOG.ours
                 { head -n 1 CHANGELOG.ours; printf '\n%s\n\n' "$section"; tail -n +3 CHANGELOG.ours; } > CHANGELOG.md
                 rm CHANGELOG.ours
                 git add CHANGELOG.md "${version_files[@]}"
                 git commit -q --no-edit
-                note="versionFile・CHANGELOG.md のコンフリクトは自動で解消済みです（versionFile は ${base} の値を残しています）。"
+                note="versionFile・CHANGELOG.md のコンフリクトは自動で解消済みです（versionFile は ${kept}）。"
               else
                 git merge --abort
                 git switch -q --detach "$NEXT"
