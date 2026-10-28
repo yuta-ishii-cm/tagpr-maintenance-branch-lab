@@ -102,8 +102,37 @@ jobs:
           newer=$(git for-each-ref --format='%(refname:lstrip=3)' 'refs/remotes/origin/release/v*' |
             sort -V | awk -v cur="$BRANCH" 'found { print } $0 == cur { found = 1 }')
 
+          IFS=',' read -ra version_files <<< "$(git config -f .tagpr tagpr.versionFile)"
+          # CHANGELOG.md から今回のバージョンの節（次の「## [」の手前まで）を取り出す
+          section=$(git show "${NEXT}:CHANGELOG.md" |
+            awk -v head="## [${NEXT}]" 'index($0, head) == 1 { p = 1 } p && /^## \[/ && index($0, head) != 1 { exit } p { print }')
+
           for base in $newer main; do
             sync="sync/${NEXT}-to-${base//\//-}"
+            note=""
+
+            # 同期先も versionFile・CHANGELOG を更新している（機能リリース済み）とその2つが必ずぶつかるため、
+            # それだけなら同期ブランチ側で解消する。versionFile は同期先の値、CHANGELOG は今回の節を先頭に差し込む
+            git switch -q --detach "origin/${base}"
+            if git merge -q --no-ff --no-edit "$NEXT"; then
+              git switch -q --detach "$NEXT"
+            else
+              conflicted=$(git diff --name-only --diff-filter=U)
+              others=$(grep -vxF -e CHANGELOG.md "${version_files[@]/#/-e}" <<< "$conflicted" || true)
+              if [ -z "$others" ]; then
+                git checkout --ours -- "${version_files[@]}"
+                git show "origin/${base}:CHANGELOG.md" > CHANGELOG.ours
+                { head -n 1 CHANGELOG.ours; printf '\n%s\n\n' "$section"; tail -n +3 CHANGELOG.ours; } > CHANGELOG.md
+                rm CHANGELOG.ours
+                git add CHANGELOG.md "${version_files[@]}"
+                git commit -q --no-edit
+                note="versionFile・CHANGELOG.md のコンフリクトは自動で解消済みです（versionFile は ${base} の値を残しています）。"
+              else
+                git merge --abort
+                git switch -q --detach "$NEXT"
+                note="次のファイルがコンフリクトしています。手で解消してください: $(tr '\n' ' ' <<< "$others")"
+              fi
+            fi
             git push origin "HEAD:refs/heads/${sync}"
 
             # 同じ保守ブランチからの古い同期PRは、新しい同期PRに内容が含まれるため閉じる
@@ -115,7 +144,7 @@ jobs:
 
             gh pr create --base "$base" --head "$sync" \
               --title "sync: ${NEXT} を ${base} に反映する" \
-              --body "保守ブランチ ${BRANCH} でリリースした ${NEXT} を ${base} に取り込みます。"
+              --body "保守ブランチ ${BRANCH} でリリースした ${NEXT} を ${base} に取り込みます。${note}"
           done
 
       - name: Update fix candidates
