@@ -55,6 +55,7 @@ jobs:
             exit 1
           fi
           next="${line}.$(( ${current##*.} + 1 ))"
+          echo "line=${line}" >> "$GITHUB_OUTPUT"
           echo "current=${current}" >> "$GITHUB_OUTPUT"
           echo "next=${next}" >> "$GITHUB_OUTPUT"
           echo "${current} -> ${next}"
@@ -91,23 +92,67 @@ jobs:
           gh release create "$NEXT" --verify-tag --title "$NEXT" \
             --generate-notes --notes-start-tag "$CURRENT"
 
-      - name: Open sync pull request to main
+      # 機能リリースのタグ作成から pro へのデプロイまでの間に旧保守ブランチで修正を出すと、
+      # 新しい保守ブランチにも反映が要るため、main だけでなく自分より新しい保守ブランチにも同期PRを作る
+      - name: Open sync pull requests
         env:
+          LINE: ${{ steps.version.outputs.line }}
           NEXT: ${{ steps.version.outputs.next }}
         run: |
-          sync="sync/${NEXT}"
-          git push origin "HEAD:refs/heads/${sync}"
+          newer=$(git for-each-ref --format='%(refname:lstrip=3)' 'refs/remotes/origin/release/v*' |
+            sort -V | awk -v cur="$BRANCH" 'found { print } $0 == cur { found = 1 }')
 
-          # 新しい同期PRに古い同期PRの内容も含まれるため、古いほうは閉じる
-          gh pr list --state open --base main --json number,headRefName \
-            --jq '.[] | select(.headRefName | startswith("sync/")) | .number' |
-            while read -r number; do
-              gh pr close "$number" --delete-branch --comment "${sync} の同期PRに置き換えるため、クローズします。"
-            done
+          IFS=',' read -ra version_files <<< "$(git config -f .tagpr tagpr.versionFile)"
+          # CHANGELOG.md から今回のバージョンの節（次の「## [」の手前まで）を取り出す
+          section=$(git show "${NEXT}:CHANGELOG.md" |
+            awk -v head="## [${NEXT}]" 'index($0, head) == 1 { p = 1 } p && /^## \[/ && index($0, head) != 1 { exit } p { print }')
 
-          gh pr create --base main --head "$sync" \
-            --title "sync: ${NEXT} を main に反映する" \
-            --body "保守ブランチ ${BRANCH} でリリースした ${NEXT} を main に取り込みます。"
+          for base in $newer main; do
+            sync="sync/${NEXT}-to-${base//\//-}"
+            note=""
+
+            # 同期先が機能リリース済みだったり、過去に複数の保守ブランチへ同期したりしていると、
+            # versionFile・CHANGELOG がぶつかる。それだけなら同期ブランチ側で解消する。
+            # versionFile は同期先と今回のうち新しいバージョン、CHANGELOG は同期先の内容の先頭に今回の節を差し込む
+            git switch -q --detach "origin/${base}"
+            if git merge -q --no-ff --no-edit "$NEXT"; then
+              git switch -q --detach "$NEXT"
+            else
+              conflicted=$(git diff --name-only --diff-filter=U)
+              others=$(grep -vxF -e CHANGELOG.md "${version_files[@]/#/-e}" <<< "$conflicted" || true)
+              if [ -z "$others" ]; then
+                base_version=$(git show "origin/${base}:${version_files[0]}" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+                kept=$(printf '%s\n%s\n' "$base_version" "$NEXT" | sort -V | tail -n 1)
+                if [ "$kept" = "$NEXT" ]; then
+                  git checkout --theirs -- "${version_files[@]}"
+                else
+                  git checkout --ours -- "${version_files[@]}"
+                fi
+                git show "origin/${base}:CHANGELOG.md" > CHANGELOG.ours
+                { head -n 1 CHANGELOG.ours; printf '\n%s\n\n' "$section"; tail -n +3 CHANGELOG.ours; } > CHANGELOG.md
+                rm CHANGELOG.ours
+                git add CHANGELOG.md "${version_files[@]}"
+                git commit -q --no-edit
+                note="versionFile・CHANGELOG.md のコンフリクトは自動で解消済みです（versionFile は ${kept}）。"
+              else
+                git merge --abort
+                git switch -q --detach "$NEXT"
+                note="次のファイルがコンフリクトしています。手で解消してください: $(tr '\n' ' ' <<< "$others")"
+              fi
+            fi
+            git push origin "HEAD:refs/heads/${sync}"
+
+            # 同じ保守ブランチからの古い同期PRは、新しい同期PRに内容が含まれるため閉じる
+            gh pr list --state open --base "$base" --json number,headRefName \
+              --jq ".[] | select(.headRefName | startswith(\"sync/${LINE}.\")) | .number" |
+              while read -r number; do
+                gh pr close "$number" --delete-branch --comment "${sync} の同期PRに置き換えるため、クローズします。"
+              done
+
+            gh pr create --base "$base" --head "$sync" \
+              --title "sync: ${NEXT} を ${base} に反映する" \
+              --body "保守ブランチ ${BRANCH} でリリースした ${NEXT} を ${base} に取り込みます。${note}"
+          done
 
       - name: Update fix candidates
         env:

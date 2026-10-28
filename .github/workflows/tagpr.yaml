@@ -28,7 +28,7 @@ jobs:
           fetch-depth: 0
 
       # tagpr は全ブランチの最新タグを現在バージョンとみなし、versionFile の値を優先する。
-      # 修正リリースのタグが main に未反映のまま動かすとバージョンがずれるため、同期PRのマージまで止める。
+      # 最新タグが main に未反映、または versionFile が最新タグとずれたまま動かすとバージョンがずれるため止める。
       - name: Guard
         id: guard
         env:
@@ -40,10 +40,17 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          IFS=',' read -ra version_files <<< "$(git config -f .tagpr tagpr.versionFile)"
+          current=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' "${version_files[0]}" | head -n 1)
           if [ "$GUARD_DISABLED" = "true" ]; then
             echo "::warning::GUARD_DISABLED=true のためガードを無効化"
           elif ! git merge-base --is-ancestor "$latest" HEAD; then
             echo "::warning::最新タグ ${latest} が main に未反映（同期PR待ち）のためスキップ"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          # リリースPRのマージ直後は versionFile が最新タグより新しいのが正常。古いときだけ止める
+          elif [ "$current" != "$latest" ] && [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)" = "$latest" ]; then
+            echo "::error::versionFile（${current}）が最新タグ ${latest} より古いためスキップ。versionFile を ${latest} に直してください"
             echo "run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
