@@ -1,5 +1,8 @@
 # Changelog
 
+## [v1.0.3](https://github.com/yuta-ishii-cm/tagpr-maintenance-branch-lab/compare/v1.0.2...v1.0.3) - 2026-10-28
+- fix: 不具合Dを修正する by @yuta-ishii-cm in https://github.com/yuta-ishii-cm/tagpr-maintenance-branch-lab/pull/8
+
 ## [v1.0.2](https://github.com/yuta-ishii-cm/tagpr-maintenance-branch-lab/compare/v1.0.1...v1.0.2) - 2026-10-28
 - fix: 不具合Bを修正する by @yuta-ishii-cm in https://github.com/yuta-ishii-cm/tagpr-maintenance-branch-lab/pull/3
 
