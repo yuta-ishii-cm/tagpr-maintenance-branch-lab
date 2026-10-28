@@ -81,6 +81,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # 修正リリースで最新タグが変わると、リリースPRのブランチ名（tagpr-from-<最新タグ>）も変わって
+      # 新しいリリースPRが作られる。古いほうが残るため閉じる
+      - name: Close stale release PRs
+        if: steps.tagpr.outputs.pull_request != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_JSON: ${{ steps.tagpr.outputs.pull_request }}
+        run: |
+          current=$(jq -r '.number' <<< "$PR_JSON")
+          gh pr list --state open --label tagpr --json number --jq ".[] | select(.number != ${current}) | .number" |
+            while read -r number; do
+              gh pr close "$number" --delete-branch --comment "#${current} に置き換えるため、クローズします。"
+            done
+
   # 機能リリース（vX.Y.0）: 保守ブランチ release/vX.Y を作り、旧保守ブランチ向けの修正候補PRを付け替える
   open-maintenance-branch:
     needs: tagpr
