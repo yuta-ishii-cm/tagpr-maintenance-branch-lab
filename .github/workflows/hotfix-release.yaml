@@ -144,6 +144,19 @@ jobs:
               --body "保守ブランチ ${BRANCH} でリリースした ${NEXT} を ${base} に取り込みます。${note}"
           done
 
+      # 最新タグが変わったため、main のリリースPR（tagpr-from-<前の最新タグ>）は古くなる。
+      # TAGPR は同期PRのマージ待ちの間ガードで止まり、古いリリースPRを閉じられない。その間にマージされると
+      # ガードでタグ付けも止まるため、ここで閉じる（同期PRのマージ後に、TAGPR が作り直す）
+      - name: Close stale release PRs
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          gh pr list --state open --label tagpr --json number --jq '.[].number' |
+            while read -r number; do
+              gh pr close "$number" --delete-branch \
+                --comment "hotfix リリース（${NEXT}）で最新タグが変わったため、クローズします。同期PRのマージ後に作り直されます。"
+            done
+
       # 古い系統から、今回リリースした保守ブランチに向けて開いている同期PRは、
       # 今回の versionFile・CHANGELOG.md の更新でコンフリクトするため直す
       - name: Refresh sync pull requests into this branch
