@@ -10,6 +10,9 @@
 - fix: 不具合Hを修正する（v1.1系向け） by @yuta-ishii-cm in https://github.com/yuta-ishii-cm/tagpr-maintenance-branch-lab/pull/24
 - sync: v1.1.2 を release/v1.2 に反映する by @github-actions[bot] in https://github.com/yuta-ishii-cm/tagpr-maintenance-branch-lab/pull/25
 
+## [v1.1.3](https://github.com/yuta-ishii-cm/tagpr-maintenance-branch-lab/compare/v1.1.2...v1.1.3) - 2026-10-29
+- ci: 不具合Kを修正する by @yuta-ishii-cm in https://github.com/yuta-ishii-cm/tagpr-maintenance-branch-lab/pull/35
+
 ## [v1.1.2](https://github.com/yuta-ishii-cm/tagpr-maintenance-branch-lab/compare/v1.1.1...v1.1.2) - 2026-10-28
 - fix: 不具合Hを修正する（v1.1系向け） by @yuta-ishii-cm in https://github.com/yuta-ishii-cm/tagpr-maintenance-branch-lab/pull/24
 
