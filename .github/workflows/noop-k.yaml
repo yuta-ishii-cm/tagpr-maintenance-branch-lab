@@ -1,0 +1,11 @@
+name: NOOP_K
+
+# 検証用: ワークフローファイルを追加する修正
+on: workflow_dispatch
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo noop
