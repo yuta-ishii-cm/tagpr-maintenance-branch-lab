@@ -1,11 +1,12 @@
 name: CI
 
-# GITHUB_TOKEN による push（tagpr・自動同期）で起動するかを観察するためのダミー
-on: [push]
+# GITHUB_TOKEN による push（tagpr・自動同期・update-branch）では on: push が起動しないため、
+# 自動化の側から workflow_dispatch で起動する
+on: [push, workflow_dispatch]
 
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: echo "ref=${GITHUB_REF} actor=${GITHUB_ACTOR} sha=${GITHUB_SHA}"
+      - run: echo "event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF} actor=${GITHUB_ACTOR} sha=${GITHUB_SHA}"
