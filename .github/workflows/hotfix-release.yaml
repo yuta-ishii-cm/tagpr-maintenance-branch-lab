@@ -16,6 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -113,7 +114,9 @@ jobs:
 
             # 同期先が機能リリース済みだったり、過去に複数の保守ブランチへ同期したりしていると、
             # versionFile・CHANGELOG がぶつかる。それだけなら同期ブランチ側で解消する。
-            # versionFile は同期先と今回のうち新しいバージョン、CHANGELOG は同期先の内容の先頭に今回の節を差し込む
+            # versionFile は同期先と今回のうち新しいバージョンにする。
+            # CHANGELOG は同期先の内容の、今回より古いバージョンの最初の節の手前に今回の節を差し込む。
+            # 先頭に差し込むと、別系統の同期PRと同じ位置を書き換えるため、後からマージする側がコンフリクトする
             git switch -q --detach "origin/${base}"
             if git merge -q --no-ff --no-edit "$NEXT"; then
               git switch -q --detach "$NEXT"
@@ -129,7 +132,19 @@ jobs:
                   git checkout --ours -- "${version_files[@]}"
                 fi
                 git show "origin/${base}:CHANGELOG.md" > CHANGELOG.ours
-                { head -n 1 CHANGELOG.ours; printf '\n%s\n\n' "$section"; tail -n +3 CHANGELOG.ours; } > CHANGELOG.md
+                at=$(grep -n '^## \[v' CHANGELOG.ours | while IFS=: read -r n line; do
+                  v=${line#'## ['}
+                  v=${v%%]*}
+                  if [ "$v" != "$NEXT" ] && [ "$(printf '%s\n%s\n' "$v" "$NEXT" | sort -V | head -n 1)" = "$v" ]; then
+                    echo "$n"
+                    break
+                  fi
+                done)
+                if [ -n "$at" ]; then
+                  { head -n $((at - 1)) CHANGELOG.ours; printf '%s\n\n' "$section"; tail -n +"$at" CHANGELOG.ours; } > CHANGELOG.md
+                else
+                  { cat CHANGELOG.ours; printf '\n%s\n' "$section"; } > CHANGELOG.md
+                fi
                 rm CHANGELOG.ours
                 git add CHANGELOG.md "${version_files[@]}"
                 git commit -q --no-edit
@@ -141,6 +156,8 @@ jobs:
               fi
             fi
             git push origin "HEAD:refs/heads/${sync}"
+            # GITHUB_TOKEN による push では CI の on: push が起動しないため、ここで起動する
+            gh workflow run ci.yaml --ref "$sync"
 
             # 同じ保守ブランチからの古い同期PRは、新しい同期PRに内容が含まれるため閉じる
             gh pr list --state open --base "$base" --json number,headRefName \
@@ -157,9 +174,25 @@ jobs:
       - name: Update fix candidates
         env:
           NEXT: ${{ steps.version.outputs.next }}
+          WAIT_ATTEMPTS: 30
+          WAIT_SECONDS: 2
         run: |
-          gh pr list --state open --base "$BRANCH" --json number --jq '.[].number' |
-            while read -r number; do
-              gh api -X PUT "repos/${GH_REPO}/pulls/${number}/update-branch" ||
+          gh pr list --state open --base "$BRANCH" --json number,headRefName,headRefOid \
+            --jq '.[] | "\(.number) \(.headRefName) \(.headRefOid)"' |
+            while read -r number head sha; do
+              if ! gh api -X PUT "repos/${GH_REPO}/pulls/${number}/update-branch" -f expected_head_sha="$sha"; then
                 gh pr comment "$number" --body "${NEXT} を取り込めませんでした（コンフリクト）。手で解消してください。"
+                continue
+              fi
+              # update-branch は非同期のため、ブランチの先頭が変わってから CI を起動する
+              attempts=0
+              until [ "$(gh api "repos/${GH_REPO}/pulls/${number}" --jq .head.sha)" != "$sha" ]; do
+                attempts=$((attempts + 1))
+                if [ "$attempts" -ge "$WAIT_ATTEMPTS" ]; then
+                  echo "::warning::#${number} のブランチ更新を確認できなかったため、CI を起動していません"
+                  continue 2
+                fi
+                sleep "$WAIT_SECONDS"
+              done
+              gh workflow run ci.yaml --ref "$head"
             done

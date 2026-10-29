@@ -108,10 +108,16 @@ jobs:
     if: needs.tagpr.outputs.tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       TAG: ${{ needs.tagpr.outputs.tag }}
+      WAIT_ATTEMPTS: 30
+      WAIT_SECONDS: 2
     steps:
       - name: Create maintenance branch and retarget pull requests
         run: |
@@ -119,10 +125,24 @@ jobs:
           sha=$(gh api "repos/${GH_REPO}/commits/${TAG}" --jq .sha)
           gh api "repos/${GH_REPO}/git/refs" -f ref="refs/heads/${branch}" -f sha="${sha}"
 
-          gh pr list --state open --json number,baseRefName \
-            --jq ".[] | select(.baseRefName | startswith(\"release/\")) | select(.baseRefName != \"${branch}\") | .number" |
-            while read -r number; do
+          gh pr list --state open --json number,baseRefName,headRefName,headRefOid \
+            --jq ".[] | select(.baseRefName | startswith(\"release/\")) | select(.baseRefName != \"${branch}\") | \"\(.number) \(.headRefName) \(.headRefOid)\"" |
+            while read -r number head head_sha; do
               gh pr edit "$number" --base "$branch"
-              gh api -X PUT "repos/${GH_REPO}/pulls/${number}/update-branch" ||
+              if ! gh api -X PUT "repos/${GH_REPO}/pulls/${number}/update-branch" -f expected_head_sha="$head_sha"; then
                 gh pr comment "$number" --body "${branch} を取り込めませんでした（コンフリクト）。手で解消してください。"
+                continue
+              fi
+              # update-branch は非同期のため、ブランチの先頭が変わってから CI を起動する。
+              # GITHUB_TOKEN による push では CI の on: push が起動しない
+              attempts=0
+              until [ "$(gh api "repos/${GH_REPO}/pulls/${number}" --jq .head.sha)" != "$head_sha" ]; do
+                attempts=$((attempts + 1))
+                if [ "$attempts" -ge "$WAIT_ATTEMPTS" ]; then
+                  echo "::warning::#${number} のブランチ更新を確認できなかったため、CI を起動していません"
+                  continue 2
+                fi
+                sleep "$WAIT_SECONDS"
+              done
+              gh workflow run ci.yaml --ref "$head"
             done
