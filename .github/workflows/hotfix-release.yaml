@@ -114,7 +114,9 @@ jobs:
 
             # 同期先が機能リリース済みだったり、過去に複数の保守ブランチへ同期したりしていると、
             # versionFile・CHANGELOG がぶつかる。それだけなら同期ブランチ側で解消する。
-            # versionFile は同期先と今回のうち新しいバージョン、CHANGELOG は同期先の内容の先頭に今回の節を差し込む
+            # versionFile は同期先と今回のうち新しいバージョンにする。
+            # CHANGELOG は同期先の内容の、今回より古いバージョンの最初の節の手前に今回の節を差し込む。
+            # 先頭に差し込むと、別系統の同期PRと同じ位置を書き換えるため、後からマージする側がコンフリクトする
             git switch -q --detach "origin/${base}"
             if git merge -q --no-ff --no-edit "$NEXT"; then
               git switch -q --detach "$NEXT"
@@ -130,7 +132,19 @@ jobs:
                   git checkout --ours -- "${version_files[@]}"
                 fi
                 git show "origin/${base}:CHANGELOG.md" > CHANGELOG.ours
-                { head -n 1 CHANGELOG.ours; printf '\n%s\n\n' "$section"; tail -n +3 CHANGELOG.ours; } > CHANGELOG.md
+                at=$(grep -n '^## \[v' CHANGELOG.ours | while IFS=: read -r n line; do
+                  v=${line#'## ['}
+                  v=${v%%]*}
+                  if [ "$v" != "$NEXT" ] && [ "$(printf '%s\n%s\n' "$v" "$NEXT" | sort -V | head -n 1)" = "$v" ]; then
+                    echo "$n"
+                    break
+                  fi
+                done)
+                if [ -n "$at" ]; then
+                  { head -n $((at - 1)) CHANGELOG.ours; printf '%s\n\n' "$section"; tail -n +"$at" CHANGELOG.ours; } > CHANGELOG.md
+                else
+                  { cat CHANGELOG.ours; printf '\n%s\n' "$section"; } > CHANGELOG.md
+                fi
                 rm CHANGELOG.ours
                 git add CHANGELOG.md "${version_files[@]}"
                 git commit -q --no-edit
