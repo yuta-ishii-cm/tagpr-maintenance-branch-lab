@@ -102,6 +102,25 @@ jobs:
               gh pr close "$number" --delete-branch --comment "#${current} に置き換えるため、クローズします。"
             done
 
+  # main の更新（機能リリースや別の同期PRのマージ）で、main への同期PRが versionFile・CHANGELOG.md で
+  # コンフリクトしたら直す
+  refresh-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Refresh sync pull requests into main
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          .github/scripts/refresh-sync-prs.sh main
+
   # 機能リリース（vX.Y.0）: 保守ブランチ release/vX.Y を作り、旧保守ブランチ向けの修正候補PRを付け替える
   open-maintenance-branch:
     needs: tagpr

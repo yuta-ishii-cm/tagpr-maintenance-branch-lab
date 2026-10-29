@@ -1,0 +1,82 @@
+name: DEPLOY_SLOT_ENV_TEST
+run-name: DEPLOY_SLOT_ENV_TEST (${{ inputs.mode }} ${{ inputs.slot }} ${{ inputs.action }} ${{ inputs.ref }})
+
+# 検証用: スロットに何が入っているかを GitHub の Environments（デプロイ履歴）に残せるかを試す。
+# - job-environment: ジョブに environment を付ける（GitHub が自動でデプロイを記録する）
+# - deployments-api: Deployments API で、入れた ref を指定して記録する
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options:
+          - job-environment
+          - deployments-api
+          - vars-only
+      slot:
+        type: choice
+        options:
+          - s1
+          - s2
+      action:
+        type: choice
+        default: deploy
+        options:
+          - deploy
+          - stop
+      ref:
+        description: 'Branch to deploy (deployments-api のときだけ使う)'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  job-environment:
+    if: inputs.mode == 'job-environment' && inputs.action == 'deploy'
+    runs-on: ubuntu-latest
+    environment:
+      name: slot-${{ inputs.slot }}
+      url: https://${{ inputs.slot }}.example.com/admin/
+    steps:
+      - run: echo "workflow ref=${GITHUB_REF} sha=${GITHUB_SHA}"
+
+  # Environment の変数だけを使い、デプロイの記録は作らない
+  vars-only:
+    if: inputs.mode == 'vars-only'
+    runs-on: ubuntu-latest
+    environment:
+      name: slot-${{ inputs.slot }}
+      deployment: false
+    steps:
+      - run: echo "vars only"
+
+  deployments-api:
+    if: inputs.mode == 'deployments-api'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      ENVIRONMENT: slot-${{ inputs.slot }}
+      REF: ${{ inputs.ref }}
+      SLOT: ${{ inputs.slot }}
+      LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Record deployment
+        if: inputs.action == 'deploy'
+        run: |
+          id=$(jq -n --arg ref "$REF" --arg env "$ENVIRONMENT" \
+            '{ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: "スロットに \($ref) を入れた"}' |
+            gh api "repos/${GH_REPO}/deployments" --input - --jq .id)
+          gh api "repos/${GH_REPO}/deployments/${id}/statuses" \
+            -f state=success -f environment_url="https://${SLOT}.example.com/admin/" -f log_url="$LOG_URL" > /dev/null
+          echo "deployment ${id}: ${REF} -> ${ENVIRONMENT}"
+
+      - name: Mark slot as stopped
+        if: inputs.action == 'stop'
+        run: |
+          id=$(gh api "repos/${GH_REPO}/deployments?environment=${ENVIRONMENT}&per_page=1" --jq '.[0].id')
+          gh api "repos/${GH_REPO}/deployments/${id}/statuses" -f state=inactive -f log_url="$LOG_URL" > /dev/null
+          echo "deployment ${id} -> inactive"
