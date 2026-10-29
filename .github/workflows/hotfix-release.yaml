@@ -16,6 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -141,6 +142,8 @@ jobs:
               fi
             fi
             git push origin "HEAD:refs/heads/${sync}"
+            # GITHUB_TOKEN による push では CI の on: push が起動しないため、ここで起動する
+            gh workflow run ci.yaml --ref "$sync"
 
             # 同じ保守ブランチからの古い同期PRは、新しい同期PRに内容が含まれるため閉じる
             gh pr list --state open --base "$base" --json number,headRefName \
@@ -157,9 +160,25 @@ jobs:
       - name: Update fix candidates
         env:
           NEXT: ${{ steps.version.outputs.next }}
+          WAIT_ATTEMPTS: 30
+          WAIT_SECONDS: 2
         run: |
-          gh pr list --state open --base "$BRANCH" --json number --jq '.[].number' |
-            while read -r number; do
-              gh api -X PUT "repos/${GH_REPO}/pulls/${number}/update-branch" ||
+          gh pr list --state open --base "$BRANCH" --json number,headRefName,headRefOid \
+            --jq '.[] | "\(.number) \(.headRefName) \(.headRefOid)"' |
+            while read -r number head sha; do
+              if ! gh api -X PUT "repos/${GH_REPO}/pulls/${number}/update-branch" -f expected_head_sha="$sha"; then
                 gh pr comment "$number" --body "${NEXT} を取り込めませんでした（コンフリクト）。手で解消してください。"
+                continue
+              fi
+              # update-branch は非同期のため、ブランチの先頭が変わってから CI を起動する
+              attempts=0
+              until [ "$(gh api "repos/${GH_REPO}/pulls/${number}" --jq .head.sha)" != "$sha" ]; do
+                attempts=$((attempts + 1))
+                if [ "$attempts" -ge "$WAIT_ATTEMPTS" ]; then
+                  echo "::warning::#${number} のブランチ更新を確認できなかったため、CI を起動していません"
+                  continue 2
+                fi
+                sleep "$WAIT_SECONDS"
+              done
+              gh workflow run ci.yaml --ref "$head"
             done
