@@ -12,6 +12,7 @@ on:
         options:
           - job-environment
           - deployments-api
+          - vars-only
       slot:
         type: choice
         options:
@@ -41,6 +42,16 @@ jobs:
       url: https://${{ inputs.slot }}.example.com/admin/
     steps:
       - run: echo "workflow ref=${GITHUB_REF} sha=${GITHUB_SHA}"
+
+  # Environment の変数だけを使い、デプロイの記録は作らない
+  vars-only:
+    if: inputs.mode == 'vars-only'
+    runs-on: ubuntu-latest
+    environment:
+      name: slot-${{ inputs.slot }}
+      deployment: false
+    steps:
+      - run: echo "vars only"
 
   deployments-api:
     if: inputs.mode == 'deployments-api'
