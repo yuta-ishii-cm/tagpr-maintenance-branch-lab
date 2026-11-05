@@ -1,19 +1,18 @@
 # tagpr-maintenance-branch-lab
 
-tagpr を main（機能リリース）と保守ブランチ `release/vX.Y`（修正リリース）の2系統で動かす運用の検証用リポジトリ。
+tagpr で機能リリース（main）を回しながら、前のバージョンへの hotfix を保守ブランチ `release/vX.Y` から出す運用の検証用リポジトリ。
 
-## 確かめること
+考え方・ワークフローの中身・導入手順・検証した場面は、ドキュメントにまとめている。
 
-- 修正候補を複数並行させ、別々のタイミングでリリースできるか（番号はリリース順に振られるか）
-- 修正リリース後に、main への同期PRと他の修正候補への取り込みが自動で行われるか
-- main のリリースPRが minor で作られ、保守ブランチの patch と番号がぶつからないか
-- 機能リリース時に新しい保守ブランチが作られ、修正候補PRが付け替わるか
-- 同期前の main・引退した保守ブランチで tagpr を動かしたときに何が起きるか（ガードの要否）
-- GITHUB_TOKEN による push で CI が起動するか
+https://yuta-ishii-cm.github.io/tagpr-maintenance-branch-lab/
 
 ## 構成
 
-- `deploy/{dev,pro}/image-tag.jsonnet`: tagpr の versionFile
+- `.tagpr`: tagpr の設定（main 専用）
+- `.github/workflows/tagpr.yaml`: TAGPR。機能リリース（ガード・minor・古いリリースPRの Close・保守ブランチの作成）
+- `.github/workflows/hotfix-release.yaml`: HOTFIX_RELEASE。保守ブランチからの hotfix リリースと同期PR
+- `.github/scripts/`: 同期PRのコンフリクトの解消
+- `.github/workflows/ci.yaml`: workflow_dispatch でも起動するダミーCI
+- `deploy/{dev,pro}/image-tag.jsonnet`: tagpr の versionFile（ダミー）
 - `app/*.txt`: PR で変更するダミーファイル
-- `.github/workflows/tagpr.yaml`: tagpr と同期・付け替えの自動化
-- `.github/workflows/ci.yaml`: push で起動するダミーCI
+- `docs/`: ドキュメント（VitePress）。`.github/workflows/docs.yaml` で GitHub Pages に公開する
